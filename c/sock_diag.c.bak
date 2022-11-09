@@ -9,45 +9,8 @@
 #include <sys/un.h>
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <linux/inet_diag.h>
 #include <linux/sock_diag.h>
 #include <linux/unix_diag.h>
-#include <netinet/in.h>
-#include <linux/tcp.h>
-
-//Kernel TCP states. /include/net/tcp_states.h
-enum{
-    TCP_ESTABLISHED = 1,
-    TCP_SYN_SENT,
-    TCP_SYN_RECV,
-    TCP_FIN_WAIT1,
-    TCP_FIN_WAIT2,
-    TCP_TIME_WAIT,
-    TCP_CLOSE,
-    TCP_CLOSE_WAIT,
-    TCP_LAST_ACK,
-    TCP_LISTEN,
-    TCP_CLOSING 
-};
-
-static const char* tcp_states_map[]={
-    [TCP_ESTABLISHED] = "ESTABLISHED",
-    [TCP_SYN_SENT] = "SYN-SENT",
-    [TCP_SYN_RECV] = "SYN-RECV",
-    [TCP_FIN_WAIT1] = "FIN-WAIT-1",
-    [TCP_FIN_WAIT2] = "FIN-WAIT-2",
-    [TCP_TIME_WAIT] = "TIME-WAIT",
-    [TCP_CLOSE] = "CLOSE",
-    [TCP_CLOSE_WAIT] = "CLOSE-WAIT",
-    [TCP_LAST_ACK] = "LAST-ACK",
-    [TCP_LISTEN] = "LISTEN",
-    [TCP_CLOSING] = "CLOSING"
-};
-
-//There are currently 11 states, but the first state is stored in pos. 1.
-//Therefore, I need a 12 bit bitmask
-#define TCPF_ALL 0xFFF
-
 
 static int send_query(int fd)
 {
@@ -57,20 +20,17 @@ static int send_query(int fd)
     struct
     {
         struct nlmsghdr nlh;
-        struct inet_diag_req_v2 idr;
+        struct unix_diag_req udr;
     } req = {
         .nlh = {
             .nlmsg_len = sizeof(req),
             .nlmsg_type = SOCK_DIAG_BY_FAMILY,
             .nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP
         },
-        .idr = {
+        .udr = {
             .sdiag_family = AF_UNIX,
-            .sdiag_protocol = IPPROTO_TCP,
-//            .idiag_states = -1,
-            .idiag_states = TCPF_ALL & 
-                ~((1<<TCP_SYN_RECV) | (1<<TCP_TIME_WAIT) | (1<<TCP_CLOSE)),
-            .idiag_ext = -1,
+            .udiag_states = -1,
+            .udiag_show = UDIAG_SHOW_NAME | UDIAG_SHOW_PEER | UDIAG_SHOW_UID
         }
     };
     struct iovec iov = {
@@ -97,74 +57,53 @@ static int send_query(int fd)
     }
 }
 
-static int print_diag(const struct inet_diag_msg *diag, unsigned int len)
+static int print_diag(const struct unix_diag_msg *diag, unsigned int len)
 {
     if (len < NLMSG_LENGTH(sizeof(*diag))) {
         fputs("short response\n", stderr);
         return -1;
     }
-    if (diag->idiag_family != AF_INET) {
-        fprintf(stderr, "unexpected family %u\n", diag->idiag_family);
+    if (diag->udiag_family != AF_UNIX) {
+        fprintf(stderr, "unexpected family %u\n", diag->udiag_family);
         return -1;
     }
 
     struct rtattr *attr;
-    struct tcp_info *tcpi;
-
     unsigned int rta_len = len - NLMSG_LENGTH(sizeof(*diag));
+    unsigned int peer = 0;
     size_t path_len = 0;
     char path[sizeof(((struct sockaddr_un *) 0)->sun_path) + 1];
 
     for (attr = (struct rtattr *) (diag + 1);
              RTA_OK(attr, rta_len); attr = RTA_NEXT(attr, rta_len)) {
         switch (attr->rta_type) {
+        case UNIX_DIAG_NAME:
+            if (!path_len) {
+                path_len = RTA_PAYLOAD(attr);
+                if (path_len > sizeof(path) - 1)
+                    path_len = sizeof(path) - 1;
+                memcpy(path, RTA_DATA(attr), path_len);
+                path[path_len] = '\0';
+            }
+            break;
 
-            case INET_DIAG_INFO:
-
-                //The payload of this attribute is a tcp_info-struct, so it is
-                //ok to cast
-                tcpi = (struct tcp_info*) RTA_DATA(attr);
-
-                //Output some sample data
-                fprintf(stdout, "\tState: %s RTT: %gms (var. %gms) "
-                        "Recv. RTT: %gms Snd_cwnd: %u/%u\n",
-                        tcp_states_map[tcpi->tcpi_state],
-                        (double) tcpi->tcpi_rtt/1000, 
-                        (double) tcpi->tcpi_rttvar/1000,
-                        (double) tcpi->tcpi_rcv_rtt/1000, 
-                        tcpi->tcpi_unacked,
-                        tcpi->tcpi_snd_cwnd);
-                break;
-
-
-//        case UNIX_DIAG_NAME:
-//            if (!path_len) {
-//                path_len = RTA_PAYLOAD(attr);
-//                if (path_len > sizeof(path) - 1)
-//                    path_len = sizeof(path) - 1;
-//                memcpy(path, RTA_DATA(attr), path_len);
-//                path[path_len] = '\0';
-//            }
-//            break;
-//
-//        case UNIX_DIAG_PEER:
-//            if (RTA_PAYLOAD(attr) >= sizeof(peer))
-//                peer = *(unsigned int *) RTA_DATA(attr);
-//            break;
+        case UNIX_DIAG_PEER:
+            if (RTA_PAYLOAD(attr) >= sizeof(peer))
+                peer = *(unsigned int *) RTA_DATA(attr);
+            break;
         }
     }
 
-//    printf("inode=%u", diag->udiag_ino);
-//
-//    if (peer)
-//        printf(", peer=%u", peer);
-//
-//    if (path_len)
-//        printf(", name=%s%s", *path ? "" : "@",
-//                *path ? path : path + 1);
-//
-//    putchar('\n');
+    printf("inode=%u", diag->udiag_ino);
 
+    if (peer)
+        printf(", peer=%u", peer);
+
+    if (path_len)
+        printf(", name=%s%s", *path ? "" : "@",
+                *path ? path : path + 1);
+
+    putchar('\n');
     return 0;
 }
 
