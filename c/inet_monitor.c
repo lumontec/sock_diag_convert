@@ -120,7 +120,8 @@ static int send_query(int fd)
 }
 
 
-void parse_diag_msg(struct inet_diag_msg *diag_msg, int rtalen){
+void parse_diag_msg(struct inet_diag_msg *diag_msg, int rtalen)
+{
     struct rtattr *attr;
     struct tcp_info *tcpi;
     char local_addr_buf[INET6_ADDRSTRLEN];
@@ -168,8 +169,10 @@ void parse_diag_msg(struct inet_diag_msg *diag_msg, int rtalen){
                 fprintf(stdout, 
                         "state: %s, src: %s:%d, dst: %s:%d, retr: %u\n", 
                         tcp_states_map[tcpi->tcpi_state],
+
                         local_addr_buf, ntohs(diag_msg->id.idiag_sport), 
                         remote_addr_buf, ntohs(diag_msg->id.idiag_dport),
+
                         tcpi->tcpi_retrans
                         );
                 fflush(stdout);
@@ -264,7 +267,8 @@ static int receive_responses(int fd)
 }
 
 
-int main(int argc, char *argv[]){
+int main(int argc, char *argv[])
+{
     int nl_sock = 0, numbytes = 0, rtalen = 0;
     struct nlmsghdr *nlh;
     uint8_t recv_buf[SOCKET_BUFFER_SIZE];
